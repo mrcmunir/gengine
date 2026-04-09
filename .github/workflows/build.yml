@@ -1,0 +1,201 @@
+name: CI BUILD gengine
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - master
+
+env:
+  APP_VERSION: 0.5.1
+  CONFIGURATION: RelWithDebInfo
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-22.04-arm, macos-latest, macos-14, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      # ==================== Linux ====================
+      - name: Install FFmpeg build tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y nasm yasm
+
+      - name: Cache static FFmpeg (Linux)
+        if: runner.os == 'Linux'
+        id: cache-ffmpeg
+        uses: actions/cache@v5
+        with:
+          path: Libraries/ffmpeg/build
+          key: ffmpeg-static-${{ runner.os }}-${{ runner.arch }}-v3
+
+      - name: Build static FFmpeg (Linux)
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true' && runner.os == 'Linux'
+        run: |
+          chmod +x build_ffmpeg_static.sh
+          ./build_ffmpeg_static.sh
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -y install \
+            libsdl2-dev \
+            libglew-dev \
+            libpng-dev \
+            libgl1-mesa-dev
+
+      - name: Configure (Linux)
+        if: runner.os == 'Linux'
+        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ env.CONFIGURATION }}
+
+      - name: Build deploy (Linux)
+        if: runner.os == 'Linux'
+        run: cmake --build build --target deploy
+
+      # ==================== macOS x86_64 ====================
+      - name: Install macOS dependencies (x86_64)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew update
+          brew install pkg-config sdl2 glew libpng zlib
+          brew install ffmpeg@4
+          brew link --force --overwrite ffmpeg@4
+
+      - name: Configure (macOS x86_64)
+        if: matrix.os == 'macos-latest'
+        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ env.CONFIGURATION }}
+
+      - name: Build deploy (macOS x86_64)
+        if: matrix.os == 'macos-latest'
+        run: cmake --build build --target deploy --config $CONFIGURATION
+
+      # ==================== macOS ARM64 ====================
+      - name: Install macOS dependencies (ARM64)
+        if: matrix.os == 'macos-14'
+        run: |
+          brew update
+          brew install pkg-config sdl2 glew libpng zlib
+          brew install ffmpeg@4
+          brew link --force --overwrite ffmpeg@4
+
+      - name: Configure (macOS ARM64)
+        if: matrix.os == 'macos-14'
+        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ env.CONFIGURATION }}
+
+      - name: Build deploy (macOS ARM64)
+        if: matrix.os == 'macos-14'
+        run: cmake --build build --target deploy --config $CONFIGURATION
+
+      # ==================== Windows ====================
+      - name: Configure (Windows)
+        if: matrix.os == 'windows-latest'
+        run: cmake -B build -G "Visual Studio 17 2022" -A Win32
+
+      - name: Build deploy (Windows)
+        if: matrix.os == 'windows-latest'
+        run: cmake --build build --target deploy --config %CONFIGURATION%
+        shell: cmd
+
+      # ==================== Portable packaging for Linux ====================
+      - name: Install patchelf (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y patchelf
+
+      - name: Make Linux package portable
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          DEPLOY_DIR="Bin/${{ env.CONFIGURATION }}"
+          BINARY="$DEPLOY_DIR/gk3"
+          echo "=== Binary info ==="
+          ls -la "$DEPLOY_DIR"
+          file "$BINARY"
+          if [ ! -f "$BINARY" ]; then
+            echo "ERROR: Binary not found"
+            exit 1
+          fi
+          echo "=== Copying essential shared libraries ==="
+          for lib in libSDL2-2.0.so.0 libGLEW.so.2.2 libpng16.so.16; do
+            found=$(ldconfig -p | grep -F "$lib" | head -1 | awk '{print $NF}')
+            if [ -n "$found" ] && [ -f "$found" ]; then
+              echo "Copying $found"
+              cp -L "$found" "$DEPLOY_DIR/"
+            else
+              echo "WARNING: $lib not found"
+            fi
+          done
+          echo "=== Copying FMOD ==="
+          ARCH=$(uname -m)
+          case "$ARCH" in
+            x86_64) FMOD_ARCH="x86_64" ;;
+            aarch64|arm64) FMOD_ARCH="aarch64" ;;
+            *) echo "Unsupported arch: $ARCH"; exit 1 ;;
+          esac
+          cp -L "Libraries/fmod/lib/linux/$FMOD_ARCH/libfmod.so.14.12" "$DEPLOY_DIR/libfmod.so.14"
+          echo "=== Adjusting binary ==="
+          patchelf --replace-needed libfmod.so libfmod.so.14 "$BINARY"
+          patchelf --set-rpath '$ORIGIN' "$BINARY"
+          echo "=== Final ldd check ==="
+          ldd "$BINARY" | grep "not found" && exit 1
+          echo "=== Contents before zip ==="
+          ls -la "$DEPLOY_DIR"
+          echo "=== Overwriting zip in place ==="
+          ZIP_NAME=$(ls "$DEPLOY_DIR"/GK3-Linux-*.zip | head -1 | xargs basename)
+          cd "$DEPLOY_DIR"
+          rm -f "$ZIP_NAME"
+          zip -r "$ZIP_NAME" .
+          cd -
+          echo "=== Done ==="
+
+      # ==================== Upload artifacts ====================
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: Game-${{ matrix.os }}-${{ runner.arch }}
+          path: Bin/${{ env.CONFIGURATION }}/GK3-*.zip
+
+  # ==================== Create GitHub Release ====================
+  upload-release:
+    name: Upload to GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: Prepare unique filenames
+        run: |
+          mkdir -p release_files
+          find artifacts -name "GK3-*.zip" -type f | while read file; do
+            parent_dir=$(basename "$(dirname "$file")")
+            new_name="release_files/$(basename "$file" .zip)-$parent_dir.zip"
+            cp "$file" "$new_name"
+            echo "Copied: $file -> $new_name"
+          done
+          echo "=== Files ready for release ==="
+          ls -la release_files/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release_files/*.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

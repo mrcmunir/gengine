@@ -309,7 +309,7 @@ int VideoState::OpenStream(int streamIndex)
 
     // We need a decoder in order to decode the stream data for playback.
     // Find the decoder from the codec ID we got from the stream info.
-    AVCodec* codec = avcodec_find_decoder(avctx->codec_id);
+    const AVCodec* codec = avcodec_find_decoder(avctx->codec_id);
     if(codec == nullptr)
     {
         av_log(NULL, AV_LOG_WARNING, "No decoder could be found for codec %s\n", avcodec_get_name(avctx->codec_id));

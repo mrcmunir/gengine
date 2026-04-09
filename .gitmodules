@@ -1,0 +1,15 @@
+[submodule "Libraries/glew"]
+	path = Libraries/glew
+	url = https://github.com/Perlmint/glew-cmake.git
+[submodule "Libraries/libpng"]
+	path = Libraries/libpng
+	url = https://github.com/glennrp/libpng.git
+[submodule "Libraries/zlib"]
+	path = Libraries/zlib
+	url = https://github.com/madler/zlib.git
+[submodule "Libraries/ffmpeg"]
+	path = Libraries/ffmpeg
+	url = https://git.ffmpeg.org/ffmpeg.git
+[submodule "Libraries/SDL"]
+	path = Libraries/SDL
+	url = https://github.com/libsdl-org/SDL.git
