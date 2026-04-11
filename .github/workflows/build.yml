@@ -19,7 +19,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, ubuntu-22.04-arm, macos-latest, macos-14, windows-latest]
+        include:
+          - os: ubuntu-22.04
+            arch: x86_64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+          - os: macos-15-intel
+            arch: x86_64
+          - os: macos-15
+            arch: arm64
+          - os: windows-latest
+            arch: x86_64
 
     runs-on: ${{ matrix.os }}
 
@@ -38,7 +48,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: Libraries/ffmpeg/build
-          key: ffmpeg-static-${{ runner.os }}-${{ runner.arch }}-v3
+          key: ffmpeg-static-${{ runner.os }}-${{ matrix.arch }}-v3
 
       - name: Build static FFmpeg (Linux)
         if: steps.cache-ffmpeg.outputs.cache-hit != 'true' && runner.os == 'Linux'
@@ -56,55 +66,37 @@ jobs:
             libpng-dev \
             libgl1-mesa-dev
 
+      # ==================== macOS ====================
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew update
+          brew install pkg-config sdl2 glew libpng zlib
+          brew install ffmpeg@4
+          brew link --force --overwrite ffmpeg@4
+
+      # ==================== Windows ====================
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        run: cmake -B build -G "Visual Studio 17 2022" -A Win32
+
+      # ==================== Configure (Linux) ====================
       - name: Configure (Linux)
         if: runner.os == 'Linux'
         run: cmake -B build -DCMAKE_BUILD_TYPE=${{ env.CONFIGURATION }}
 
-      - name: Build deploy (Linux)
-        if: runner.os == 'Linux'
-        run: cmake --build build --target deploy
+      # ==================== Configure (macOS) ====================
+      - name: Configure (macOS)
+        if: runner.os == 'macOS'
+        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ env.CONFIGURATION }} -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }}
 
-      # ==================== macOS x86_64 ====================
-      - name: Install macOS dependencies (x86_64)
-        if: matrix.os == 'macos-latest'
-        run: |
-          brew update
-          brew install pkg-config sdl2 glew libpng zlib
-          brew install ffmpeg@4
-          brew link --force --overwrite ffmpeg@4
-
-      - name: Configure (macOS x86_64)
-        if: matrix.os == 'macos-latest'
-        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ env.CONFIGURATION }}
-
-      - name: Build deploy (macOS x86_64)
-        if: matrix.os == 'macos-latest'
-        run: cmake --build build --target deploy --config $CONFIGURATION
-
-      # ==================== macOS ARM64 ====================
-      - name: Install macOS dependencies (ARM64)
-        if: matrix.os == 'macos-14'
-        run: |
-          brew update
-          brew install pkg-config sdl2 glew libpng zlib
-          brew install ffmpeg@4
-          brew link --force --overwrite ffmpeg@4
-
-      - name: Configure (macOS ARM64)
-        if: matrix.os == 'macos-14'
-        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ env.CONFIGURATION }}
-
-      - name: Build deploy (macOS ARM64)
-        if: matrix.os == 'macos-14'
-        run: cmake --build build --target deploy --config $CONFIGURATION
-
-      # ==================== Windows ====================
-      - name: Configure (Windows)
-        if: matrix.os == 'windows-latest'
-        run: cmake -B build -G "Visual Studio 17 2022" -A Win32
+      # ==================== Build deploy ====================
+      - name: Build deploy (Unix)
+        if: runner.os != 'Windows'
+        run: cmake --build build --target deploy --config ${{ env.CONFIGURATION }}
 
       - name: Build deploy (Windows)
-        if: matrix.os == 'windows-latest'
+        if: runner.os == 'Windows'
         run: cmake --build build --target deploy --config %CONFIGURATION%
         shell: cmd
 
@@ -137,11 +129,10 @@ jobs:
             fi
           done
           echo "=== Copying FMOD ==="
-          ARCH=$(uname -m)
-          case "$ARCH" in
+          case "${{ matrix.arch }}" in
             x86_64) FMOD_ARCH="x86_64" ;;
-            aarch64|arm64) FMOD_ARCH="aarch64" ;;
-            *) echo "Unsupported arch: $ARCH"; exit 1 ;;
+            arm64) FMOD_ARCH="aarch64" ;;
+            *) echo "Unsupported arch: ${{ matrix.arch }}"; exit 1 ;;
           esac
           cp -L "Libraries/fmod/lib/linux/$FMOD_ARCH/libfmod.so.14.12" "$DEPLOY_DIR/libfmod.so.14"
           echo "=== Adjusting binary ==="
@@ -149,8 +140,6 @@ jobs:
           patchelf --set-rpath '$ORIGIN' "$BINARY"
           echo "=== Final ldd check ==="
           ldd "$BINARY" | grep "not found" && exit 1
-          echo "=== Contents before zip ==="
-          ls -la "$DEPLOY_DIR"
           echo "=== Overwriting zip in place ==="
           ZIP_NAME=$(ls "$DEPLOY_DIR"/GK3-Linux-*.zip | head -1 | xargs basename)
           cd "$DEPLOY_DIR"
@@ -163,7 +152,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: Game-${{ matrix.os }}-${{ runner.arch }}
+          name: Game-${{ runner.os }}-${{ matrix.arch }}
           path: Bin/${{ env.CONFIGURATION }}/GK3-*.zip
 
   # ==================== Create GitHub Release ====================
